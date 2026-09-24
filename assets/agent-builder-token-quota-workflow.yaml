@@ -1,0 +1,75 @@
+
+name: Enforce Agent Builder User Token Quota
+enabled: true
+description: Blocks Agent Builder execution when the authenticated user has exceeded their token quota.
+triggers:
+  - type: manual
+
+steps:
+  - name: get_current_user
+    type: console
+    with:
+      message: "View this execution: {{ execution.executedBy }}"
+
+  - name: compute_current_month
+    type: data.set
+    with:
+      current_month: "{{ now | date: '%Y-%m' }}"
+
+  - name: get_user_quota
+    type: elasticsearch.search
+    with:
+      index: ai-agent-builder-user-quota
+      query:
+        term:
+          _id: "{{ execution.executedBy }}-{{ steps.compute_current_month.output.current_month }}"
+      size: 1
+
+  - name: calculate_usage
+    type: elasticsearch.esql.query
+    with:
+      format: json
+      query: |
+        FROM traces-agent_builder.otel-*
+        | WHERE @timestamp >= TO_DATETIME("{{ steps.get_user_quota.output.hits.hits[0]._source.period_start }}")
+        | WHERE @timestamp < TO_DATETIME("{{ steps.get_user_quota.output.hits.hits[0]._source.period_end }}")
+        | EVAL input_l = TO_LONG(gen_ai.usage.input_tokens),
+               output_l = TO_LONG(gen_ai.usage.output_tokens)
+        | STATS input = SUM(input_l),
+                output = SUM(output_l),
+                user_id = VALUES(user.id)
+          BY gen_ai.conversation.id
+        | WHERE MV_CONTAINS(user_id, "{{ execution.executedBy }}")
+        | EVAL total = input + output
+        | STATS input = SUM(input),
+                output = SUM(output),
+                total = SUM(total)
+  - name: extract_usage
+    type: data.set
+    with:
+      total_used: "{{ steps.calculate_usage.output.values[0][2] | default: 0 }}"
+      input_used: "{{ steps.calculate_usage.output.values[0][0] | default: 0 }}"
+      output_used: "{{ steps.calculate_usage.output.values[0][1] | default: 0 }}"
+  - name: check_quota
+    type: data.set
+    with:
+      quota_exceeded: "{% if steps.extract_usage.output.total_used >= steps.get_user_quota.output.hits.hits[0]._source.token_limit %}true{% else %}false{% endif %}"
+  - name: log_usage_values
+    type: console 
+    with:
+      message: "Usage - input: {{ steps.extract_usage.output.input_used }}, output: {{ steps.extract_usage.output.output_used }}, total: {{ steps.extract_usage.output.total_used }}"
+
+  - name: enforce_quota
+    type: if
+    steps:
+      - name: quota_reached
+        type: workflow.fail
+        with:
+          message: Your monthly Agent Builder token quota has been reached. {{ steps.extract_usage.output.total_used }}/{{ steps.get_user_quota.output.hits.hits[0]._source.token_limit }}
+    condition: "steps.check_quota.output.quota_exceeded : true"
+    else:
+      - name: within_quota
+        type: console
+        with:
+          message: User is within quota. Execution allowed. {{ steps.extract_usage.output.total_used }}/{{ steps.get_user_quota.output.hits.hits[0]._source.token_limit }}
+
