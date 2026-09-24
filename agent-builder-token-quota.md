@@ -6,15 +6,25 @@ Agent Builder does not currently provide a native feature to stop a user when th
 
 This approach adds quota control using an Elastic workflow that runs before the Agent Builder execution. The workflow checks how many tokens the user has already consumed during the current period, compares that usage with a quota stored in Elasticsearch, and either allows or blocks the request.
 
+A demonstration video is available [here](https://youtu.be/B2XF9qTcYO0)
+
 ## Prerequisites
 
 Agent Builder tracing must be enabled so that token usage is written to Elasticsearch.
 
-In Kibana advanced settings, enable:
+In Kibana advanced settings, under `Agent Builder Traces` enable:
 
 ```text
 agentBuilder:tracing:enabled
 ```
+
+and under `Agent Builder Traces` advanced settings, enable:
+
+```text
+agentBuilder:tracing:includeUserData:enabled
+```
+
+This feature is only available in Elastic Serverless.
 
 When tracing is enabled, Agent Builder execution traces are collected in the following data stream:
 
